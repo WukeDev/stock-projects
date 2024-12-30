@@ -10,10 +10,11 @@ import threading
 
 # File paths
 folder = './optionsdata/'
-file_path = '%sSPXdata-%s.csv'
+tickers = ['SPX', 'SPY']
+file_path = '%s%sdata-%s.csv'
 # address = 'file:///C:/Users/Luke/Downloads/Ly_fi.html'
-address = 'https://researchtools.fidelity.com/ftgw/mloptions/goto/underlyingStatistics?cusip=&symbol=SPX&Search=Search'
-interval = 60
+address = 'https://researchtools.fidelity.com/ftgw/mloptions/goto/underlyingStatistics?cusip=&symbol=%s&Search=Search'
+interval = 30
 
 # Process locator text
 def process(locator: Locator):
@@ -41,6 +42,14 @@ def launch_dash(update_period):
             start_date=pd.to_datetime('today').date(),
             end_date=pd.to_datetime('today').date(),
         ),
+        dcc.Input(
+            id='ticker',
+            type='text',
+            value='SPX',
+            placeholder="ticker",
+            debounce=True,
+        ),
+        html.Button('Update', id='update-button', n_clicks=0),
         dcc.Graph(id='delta-graph', config={"responsive": True}, style={'width': '100%', 'height': '100vh'}),
         dcc.Graph(id='premium-graph', config={"responsive": True}, style={'width': '100%', 'height': '100vh'}),
         dcc.Interval(
@@ -55,10 +64,12 @@ def launch_dash(update_period):
          Output('premium-graph', 'figure')],
         Input('date-range', 'start_date'),
         Input('date-range', 'end_date'),
-        Input('interval-component', 'n_intervals')
+        Input('ticker', 'value'),
+        Input('update-button', 'n_clicks'),
+        Input('interval-component', 'n_intervals'),
     )
-    def update_state(start_date, end_date, n_intervals):
-        return update_graphs(start_date=start_date, end_date=end_date)
+    def update_state(start_date, end_date, ticker, n_clicks, n_intervals):
+        return update_graphs(start_date=start_date, end_date=end_date, ticker=ticker)
 
     # Run Dash server
     app.run(debug=False, port=8050, use_reloader=False)
@@ -66,14 +77,15 @@ def launch_dash(update_period):
 
 
 # Function for obtaining a graph based on start date and end date from a csv file
-def update_graphs(start_date, end_date, initial_df: pd.DataFrame=None):
+def update_graphs(start_date, end_date, ticker: str, initial_df: pd.DataFrame=None):
+        ticker.upper()
         date = pd.to_datetime(start_date).date()
         end_date = pd.to_datetime(end_date).date()
         dataframes = []
         if initial_df is not None:
             dataframes.append(initial_df)
         while date <= end_date:
-            full_file_path = file_path % (folder, date)
+            full_file_path = file_path % (folder, ticker, date)
             if os.path.exists(full_file_path):
                 dataframes.append(pd.read_csv(full_file_path))
             date = date + pd.Timedelta(days=1)
@@ -139,17 +151,56 @@ def update_graphs(start_date, end_date, initial_df: pd.DataFrame=None):
         return delta_fig, premium_fig
 
 # Luanch scraper and wait until user logs in
-def launch_scraper(address, interval=5):
+def launch_scraper(address, ticker_arr, interval=5):
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False)
-        scanner_page = browser.new_page()
-        scanner_page.goto(address)
-        scanner_page.wait_for_selector('#premium', timeout=500000)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        
+        # add a script to bypass bot detection
+        context.add_init_script('''const defaultGetter = Object.getOwnPropertyDescriptor(
+            Navigator.prototype,
+            "webdriver"
+            ).get;
+            defaultGetter.apply(navigator);
+            defaultGetter.toString();
+            Object.defineProperty(Navigator.prototype, "webdriver", {
+            set: undefined,
+            enumerable: true,
+            configurable: true,
+            get: new Proxy(defaultGetter, {
+                apply: (target, thisArg, args) => {
+                Reflect.apply(target, thisArg, args);
+                return false;
+                },
+            }),
+            });
+            const patchedGetter = Object.getOwnPropertyDescriptor(
+            Navigator.prototype,
+            "webdriver"
+            ).get;
+            patchedGetter.apply(navigator);
+            patchedGetter.toString();''')
+        
+        login_page = context.new_page()
+        login_page.goto('https://digital.fidelity.com/prgw/digital/login/full-page')
+        login_page.wait_for_selector(".pbn", timeout=500000)
+        
+        scanner_pages = []
+        for ticker in ticker_arr:
+            individual_page = context.new_page()
+            individual_page.goto(address % ticker)
+            scanner_pages.append(individual_page)
+        login_page.close()
+
         graph_page = browser.new_page()
         graph_page.goto('http://127.0.0.1:8050/')
         while True:
             start_time = time.time()
-            update_csv(scanner_page)
+            
+            # actions
+            for scanner_page in scanner_pages:
+                update_csv(scanner_page)
+            
             end_time = time.time()
             wait_time = end_time - start_time
             if (wait_time < interval):
@@ -160,7 +211,8 @@ def launch_scraper(address, interval=5):
 # Update the csv file based on page data. Might remove dataframe dependency in the future
 def update_csv(page: Page):
     current_date = pd.to_datetime('today').date()
-    full_file_path = file_path % (folder, current_date)
+    symbol = page.locator("input#symbol").get_attribute("value").upper()
+    full_file_path = file_path % (folder, symbol, current_date)
 
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -197,7 +249,7 @@ if __name__ == '__main__':
         os.makedirs(folder)
         
     dash_thread = threading.Thread(target=launch_dash, args=(interval,), daemon=True)
-    scrape_thread = threading.Thread(target=launch_scraper, args=(address,interval))
+    scrape_thread = threading.Thread(target=launch_scraper, args=(address, tickers, interval))
     # Start threads
     dash_thread.start()
     scrape_thread.start()
@@ -205,5 +257,3 @@ if __name__ == '__main__':
     # Wait for both threads to complete
     scrape_thread.join()
     dash_thread.join()
-
-
