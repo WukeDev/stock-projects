@@ -12,7 +12,6 @@ import threading
 folder = './optionsdata/'
 tickers = ['SPX', 'SPY']
 file_path = '%s%sdata-%s.csv'
-# address = 'file:///C:/Users/Luke/Downloads/Ly_fi.html'
 address = 'https://researchtools.fidelity.com/ftgw/mloptions/goto/underlyingStatistics?cusip=&symbol=%s&Search=Search'
 interval = 30
 
