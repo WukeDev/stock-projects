@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import pandas as pd
@@ -9,7 +10,7 @@ import time
 import threading
 
 # File paths
-folder = './optionsdata/'
+folder = './optionsdata/' # subfolder to store local options data
 tickers = ['SPX', 'SPY']
 file_path = '%s%sdata-%s.csv'
 address = 'https://researchtools.fidelity.com/ftgw/mloptions/goto/underlyingStatistics?cusip=&symbol=%s&Search=Search'
@@ -71,7 +72,7 @@ def launch_dash(update_period):
         return update_graphs(start_date=start_date, end_date=end_date, ticker=ticker)
 
     # Run Dash server
-    app.run(debug=False, port=8050, use_reloader=False)
+    app.run(debug=False, host='0.0.0.0', port=8050, use_reloader=False)
         
 
 
@@ -150,7 +151,7 @@ def update_graphs(start_date, end_date, ticker: str, initial_df: pd.DataFrame=No
         return delta_fig, premium_fig
 
 # Luanch scraper and wait until user logs in
-def launch_scraper(address, ticker_arr, interval=5):
+def launch_scraper(address, ticker_arr, login_file=None, interval=5):
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
@@ -182,6 +183,15 @@ def launch_scraper(address, ticker_arr, interval=5):
         
         login_page = context.new_page()
         login_page.goto('https://digital.fidelity.com/prgw/digital/login/full-page')
+        
+        # If we want to prefill login
+        if login_file is not None:
+            with open(login_file, 'r') as file:
+                login_data = json.load(file)
+                login_page.get_by_label("Username", exact=True).fill(login_data["username"])
+                login_page.get_by_label("Password", exact=True).fill(login_data["password"])
+                login_page.get_by_role("button", name="Log in").click()
+        
         login_page.wait_for_selector(".pbn", timeout=500000)
         
         scanner_pages = []
@@ -247,8 +257,10 @@ if __name__ == '__main__':
     if not os.path.exists(folder):
         os.makedirs(folder)
         
+    current_directory = os.path.dirname(os.path.realpath(__file__))
+    login_file_path = os.path.join(current_directory, "login.json")
     dash_thread = threading.Thread(target=launch_dash, args=(interval,), daemon=True)
-    scrape_thread = threading.Thread(target=launch_scraper, args=(address, tickers, interval))
+    scrape_thread = threading.Thread(target=launch_scraper, args=(address, tickers, login_file_path, interval))
     # Start threads
     dash_thread.start()
     scrape_thread.start()
@@ -256,3 +268,5 @@ if __name__ == '__main__':
     # Wait for both threads to complete
     scrape_thread.join()
     dash_thread.join()
+
+
